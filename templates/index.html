@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LED Control</title>
+    <script>
+        async function setLED(state) {
+            const response = await fetch(`/led/${state}`, { method: 'POST' });
+            const result = await response.json();
+            document.getElementById('led-state').innerText = result.led;
+        }
+    </script>
+</head>
+<body>
+    <h1>LED Control</h1>
+    <p>LED is currently: <span id="led-state">{{ led_state }}</span></p>
+    <button onclick="setLED('on')">Turn ON</button>
+    <button onclick="setLED('off')">Turn OFF</button>
+</body>
+</html>
