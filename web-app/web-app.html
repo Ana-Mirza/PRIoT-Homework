@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MQTT LED Controller</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin-top: 50px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      margin: 10px;
+      cursor: pointer;
+    }
+    .on {
+      background-color: green;
+      color: white;
+    }
+    .off {
+      background-color: red;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <h1>MQTT LED Controller</h1>
+  <p>Status: <span id="status">Disconnected</span></p>
+  <button id="btnOn" class="on">Turn LED ON</button>
+  <button id="btnOff" class="off">Turn LED OFF</button>
+
+  <script>
+    // MQTT broker details
+    const broker = "wss://broker.emqx.io:8084/mqtt"; // WebSocket connection to EMQX
+    const topic = "led/control"; // Topic to publish LED control messages
+
+    // Create MQTT client
+    const client = mqtt.connect(broker);
+
+    // HTML elements
+    const statusEl = document.getElementById("status");
+    const btnOn = document.getElementById("btnOn");
+    const btnOff = document.getElementById("btnOff");
+
+    // Update connection status
+    client.on("connect", () => {
+      console.log("Connected to MQTT broker");
+      statusEl.textContent = "Connected";
+      statusEl.style.color = "green";
+    });
+
+    client.on("disconnect", () => {
+      console.log("Disconnected from MQTT broker");
+      statusEl.textContent = "Disconnected";
+      statusEl.style.color = "red";
+    });
+
+    // Publish messages when buttons are clicked
+    btnOn.addEventListener("click", () => {
+      client.publish(topic, "ON");
+      console.log("Published: ON");
+    });
+
+    btnOff.addEventListener("click", () => {
+      client.publish(topic, "OFF");
+      console.log("Published: OFF");
+    });
+
+    // Handle errors
+    client.on("error", (err) => {
+      console.error("Connection error: ", err);
+      statusEl.textContent = "Error";
+      statusEl.style.color = "orange";
+    });
+  </script>
+</body>
+</html>

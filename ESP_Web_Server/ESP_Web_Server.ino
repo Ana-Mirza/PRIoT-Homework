@@ -37,7 +37,7 @@ void loop() {
 
     // Begin HTTP request with WiFi client and URL
     WiFiClient client;
-    // client.setInsecure();
+    
     if (http.begin(client, serverUrl)) {
       int httpCode = http.GET();
 
