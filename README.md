@@ -8,20 +8,23 @@
 - ESP8266 board
 - LED
 
-### Dependencies
+### Dependencies (http server)
 
 ```
 pip install flask
 ```
 
-## How to run server
+## How to run HTTP server
 
 ```
 python server.py
 ```
 
+## MQTT Web Application URL
+https://ana-mirza.github.io/web-app.html
+
 ## How to setup node
-Upload *ESP_Web_Server.ino* on the ESP8266 board.
+Upload *ESP_MQTT_Server.ino* on the ESP8266 board.
 
 ## Application
 The application running on the server allows the user to control the LED on the board.
