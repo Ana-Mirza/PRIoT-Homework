@@ -1,7 +1,17 @@
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <Wire.h>
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+#define THRESHOLD_TEMP 25
+#define THRESHOLD_HUMIDITY 35
+#define THRESHOLD_PRESSURE 1000 
 
 // Replace with your network credentials
 const char *ssid = "iPhony";
@@ -10,9 +20,24 @@ const char *password = "A23No26dA202";
 // MQTT Broker settings
 const char *mqtt_broker = "broker.emqx.io";  // EMQX broker endpoint
 const int mqtt_port = 8883;  // MQTT port (TLS)
-const char *mqtt_topic = "led/control";  // Topic for controlling the LED
 const char *mqtt_username = "emqx";
 const char *mqtt_password = "public";
+
+// Topics
+const char *mqtt_topic_temp = "anami/bme280/temperature";
+const char *mqtt_topic_pressure = "anami/bme280/pressure";
+const char *mqtt_topic_humidity = "anami/bme280/humidity";
+const char *mqtt_topic_alarm = "anami/bme280/alarm/status";
+const char *mqtt_topic = "anami/bme280/alarm";
+
+// Alarm Control
+unsigned long overrideStartTime = 0;
+const unsigned long overrideDuration = 30 * 1000; // 30 seconds in milliseconds
+bool manualOverride = false;
+bool alarmOn = false;
+
+// Sensor threshold
+const float temperature_threshold = 30.0; // Temperature in Celsius to trigger LED
 
 // NTP Server settings
 const char *ntp_server = "pool.ntp.org";     // Default NTP server
@@ -21,6 +46,8 @@ const int daylight_offset_sec = 0;        // Daylight saving time offset in seco
 
 // GPIO pin where the LED is connected
 const int ledPin = D6;
+
+Adafruit_BME280 bme; // I2C
 
 // WiFi and MQTT client initialization
 BearSSL::WiFiClientSecure espClient;
@@ -57,6 +84,7 @@ void connectToWiFi();
 void connectToMQTT();
 void syncTime();
 void mqttCallback(char *topic, byte *payload, unsigned int length);
+void readAndPublishSensorData();
 
 void setup() {
   pinMode(ledPin, OUTPUT);
@@ -67,6 +95,16 @@ void setup() {
   mqtt_client.setServer(mqtt_broker, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   connectToMQTT();
+
+  // Initialize BME280 sensor
+  if (!bme.begin(0x76)) {
+    Serial.println("Could not find a valid BME280 sensor, check wiring!");
+    while (1) {
+      delay(1000); // Halt execution
+    }
+  } else {
+    Serial.println("BME280 sensor initialized successfully.");
+  }
 }
 
 void connectToWiFi() {
@@ -104,8 +142,10 @@ void connectToMQTT() {
         if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_password)) {
             Serial.println("Connected to MQTT broker");
             mqtt_client.subscribe(mqtt_topic);
+            mqtt_client.subscribe(mqtt_topic_alarm);
+
             // Publish message upon successful connection
-            mqtt_client.publish(mqtt_topic, "Hi EMQX I'm ESP8266 ^^");
+            mqtt_client.publish(mqtt_topic_alarm, "OFF");
         } else {
             char err_buf[128];
             espClient.getLastSSLError(err_buf, sizeof(err_buf));
@@ -133,12 +173,33 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   if (String(topic) == mqtt_topic) {
     if (message == "ON") {
       digitalWrite(ledPin, HIGH); // Turn LED on
-      Serial.println("LED ON");
-    } else if (message == "OFF") {
+      Serial.println("Alarm ON");
+
+      if (!alarmOn) {
+        mqtt_client.publish("anami/bme280/alarm/status", "ON");
+      }
+      alarmOn = true;
+    } else if (message == "OFF" && manualOverride == false && alarmOn) {
+      alarmOn = false;
+      mqtt_client.publish("anami/bme280/alarm/status", "OFF (Override)");
+
       digitalWrite(ledPin, LOW); // Turn LED off
-      Serial.println("LED OFF");
+      Serial.println("LED OFF (Manual Override)");
+      manualOverride = true;
+      overrideStartTime = millis(); // Start override timer
     }
   }
+}
+
+void publishSensorData() {
+  float temperature = bme.readTemperature();
+  float pressure = bme.readPressure() / 100.0F;
+  float humidity = bme.readHumidity();
+
+  // Publish data to separate MQTT topics
+  mqtt_client.publish(mqtt_topic_temp, String(temperature).c_str());
+  mqtt_client.publish(mqtt_topic_pressure, String(pressure).c_str());
+  mqtt_client.publish(mqtt_topic_humidity, String(humidity).c_str());
 }
 
 void loop() {
@@ -146,4 +207,34 @@ void loop() {
         connectToMQTT();
     }
     mqtt_client.loop();
+
+    // Handle override mode
+    if (manualOverride) {
+        if (millis() - overrideStartTime > overrideDuration) {
+            manualOverride = false; // Exit override mode
+        }
+    } else {
+        Serial.println("Entered automatic control logc");
+        // Automatic control logic
+        float temperature = bme.readTemperature();
+        float humidity = bme.readHumidity();
+        float pressure = bme.readPressure() / 100.0F;
+
+        if (temperature > THRESHOLD_TEMP || humidity > THRESHOLD_HUMIDITY || pressure > THRESHOLD_PRESSURE) {
+            digitalWrite(ledPin, HIGH);
+            Serial.println("Threshold exceeded, alarm ON");
+
+            if (!alarmOn) {
+              mqtt_client.publish("anami/bme280/alarm/status", "ON: Threshold exceeded");
+            }
+            alarmOn = true;
+        } else {
+            digitalWrite(ledPin, LOW);
+            alarmOn = false;
+            mqtt_client.publish("anami/bme280/alarm/status", "OFF: Normal Conditions");
+        }
+    }
+
+    // Publish sensor values to MQTT
+    publishSensorData();
 }
