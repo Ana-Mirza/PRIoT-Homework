@@ -7,6 +7,36 @@
 #include <WiFiClientSecure.h>
 #include <time.h>
 
+// Influxdb
+#if defined(ESP32)
+  #include <WiFiMulti.h>
+  #define DEVICE "ESP32"
+#elif defined(ESP8266)
+  #include <ESP8266WiFiMulti.h>
+  #define DEVICE "ESP8266"
+#endif
+
+#include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
+
+// WiFi AP SSID
+#define WIFI_SSID "iPhony"
+// WiFi password
+#define WIFI_PASSWORD "A23No26dA202"
+
+// InfluxDB configurations
+#define INFLUXDB_URL "https://us-east-1-1.aws.cloud2.influxdata.com"
+#define INFLUXDB_TOKEN "iLhW7vP0lyO3iU7ZaGAhO_WwbmpJSjwFBgeB-f7qiQ-QTa-Fx2NQFIIZh3-A6_kGcyCIzpOoDynWvQth78CfHg=="
+#define INFLUXDB_ORG "2e94ef7be60d4ca8"
+#define INFLUXDB_BUCKET "Sensor-Data"
+
+// Declare InfluxDB client instance with preconfigured InfluxCloud certificate
+InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+
+// Declare Data point
+Point sensorReadings("measurements");
+
+// Thresholds
 #define SEALEVELPRESSURE_HPA (1013.25)
 
 #define THRESHOLD_TEMP 25
@@ -14,8 +44,8 @@
 #define THRESHOLD_PRESSURE 1000 
 
 // Replace with your network credentials
-const char *ssid = "iPhony";
-const char *password = "A23No26dA202";
+const char *ssid = WIFI_SSID;
+const char *password = WIFI_PASSWORD;
 
 // MQTT Broker settings
 const char *mqtt_broker = "broker.emqx.io";  // EMQX broker endpoint
@@ -35,9 +65,6 @@ unsigned long overrideStartTime = 0;
 const unsigned long overrideDuration = 30 * 1000; // 30 seconds in milliseconds
 bool manualOverride = false;
 bool alarmOn = false;
-
-// Sensor threshold
-const float temperature_threshold = 30.0; // Temperature in Celsius to trigger LED
 
 // NTP Server settings
 const char *ntp_server = "pool.ntp.org";     // Default NTP server
@@ -85,6 +112,8 @@ void connectToMQTT();
 void syncTime();
 void mqttCallback(char *topic, byte *payload, unsigned int length);
 void readAndPublishSensorData();
+void initInfluxdbClient();
+void addReadings(float temperature, float pressure, float humidity);
 
 void setup() {
   pinMode(ledPin, OUTPUT);
@@ -92,6 +121,7 @@ void setup() {
   Serial.begin(115200);
   connectToWiFi();
   syncTime();  // X.509 validation requires synchronization time
+  initInfluxdbClient();
   mqtt_client.setServer(mqtt_broker, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   connectToMQTT();
@@ -108,12 +138,13 @@ void setup() {
 }
 
 void connectToWiFi() {
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(1000);
-        Serial.println("Connecting to WiFi...");
-    }
-    Serial.println("Connected to WiFi");
+  // Setup wifi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
 }
 
 void syncTime() {
@@ -133,6 +164,22 @@ void syncTime() {
     }
 }
 
+void initInfluxdbClient() {
+  // Check server connection
+    if (client.validateConnection()) {
+      Serial.print("Connected to InfluxDB: ");
+      Serial.println(client.getServerUrl());
+    } else {
+      Serial.print("InfluxDB connection failed: ");
+      Serial.println(client.getLastErrorMessage());
+    }
+
+    // Add tags
+    sensorReadings.addTag("device", DEVICE);
+    sensorReadings.addTag("location", "garden");
+    sensorReadings.addTag("sensor", "bme280");
+}
+
 void connectToMQTT() {
     BearSSL::X509List serverTrustedCA(ca_cert);
     espClient.setTrustAnchors(&serverTrustedCA);  // Set the trusted root certificate
@@ -143,9 +190,6 @@ void connectToMQTT() {
             Serial.println("Connected to MQTT broker");
             mqtt_client.subscribe(mqtt_topic);
             mqtt_client.subscribe(mqtt_topic_alarm);
-
-            // Publish message upon successful connection
-            mqtt_client.publish(mqtt_topic_alarm, "OFF");
         } else {
             char err_buf[128];
             espClient.getLastSSLError(err_buf, sizeof(err_buf));
@@ -191,6 +235,23 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   }
 }
 
+void addReadings(float temperature, float pressure, float humidity) {
+  // Add readings as fields to point
+  sensorReadings.addField("temperature", temperature);
+  sensorReadings.addField("humidity", humidity);
+  sensorReadings.addField("pressure", pressure);
+
+  // Print what are we exactly writing
+  Serial.print("Writing: ");
+  Serial.println(client.pointToLineProtocol(sensorReadings));
+  
+  // Write point into buffer
+  client.writePoint(sensorReadings);
+
+  // Clear fields for next usage. Tags remain the same.
+  sensorReadings.clearFields();
+}
+
 void publishSensorData() {
   float temperature = bme.readTemperature();
   float pressure = bme.readPressure() / 100.0F;
@@ -200,6 +261,9 @@ void publishSensorData() {
   mqtt_client.publish(mqtt_topic_temp, String(temperature).c_str());
   mqtt_client.publish(mqtt_topic_pressure, String(pressure).c_str());
   mqtt_client.publish(mqtt_topic_humidity, String(humidity).c_str());
+
+  // Add reading to InfluxDB
+  addReadings(temperature, pressure, humidity);
 }
 
 void loop() {
@@ -214,7 +278,6 @@ void loop() {
             manualOverride = false; // Exit override mode
         }
     } else {
-        Serial.println("Entered automatic control logc");
         // Automatic control logic
         float temperature = bme.readTemperature();
         float humidity = bme.readHumidity();
@@ -222,16 +285,20 @@ void loop() {
 
         if (temperature > THRESHOLD_TEMP || humidity > THRESHOLD_HUMIDITY || pressure > THRESHOLD_PRESSURE) {
             digitalWrite(ledPin, HIGH);
-            Serial.println("Threshold exceeded, alarm ON");
 
             if (!alarmOn) {
+              Serial.println("Threshold exceeded, alarm ON");
               mqtt_client.publish("anami/bme280/alarm/status", "ON: Threshold exceeded");
             }
             alarmOn = true;
         } else {
             digitalWrite(ledPin, LOW);
+
+            if (alarmOn) {
+              Serial.println("Normal conditions, alarm Off");
+              mqtt_client.publish("anami/bme280/alarm/status", "OFF: Normal Conditions");
+            }
             alarmOn = false;
-            mqtt_client.publish("anami/bme280/alarm/status", "OFF: Normal Conditions");
         }
     }
 
