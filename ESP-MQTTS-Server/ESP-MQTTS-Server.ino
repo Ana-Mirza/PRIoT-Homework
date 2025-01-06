@@ -2,6 +2,9 @@
 #include <Adafruit_BME280.h>
 #include <Wire.h>
 
+#include <ezBuzzer.h>
+#include "pitches.h"
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
@@ -36,6 +39,39 @@ InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKE
 // Declare Data point
 Point sensorReadings("measurements");
 
+// GPIO pin where the LED is connected
+const int ledPin = D6;
+const int buzzerPin = D8;
+
+// Create ezBuzzer object that attach to a pin
+ezBuzzer buzzer(buzzerPin); 
+
+// note durations: 4 = quarter note, 8 = eighth note, etc, also called tempo:
+int noteDurations[] = {
+  10, 10, 10,
+  10, 10, 10,
+  10, 10, 10, 10,
+  10,
+  10, 10, 10, 10,
+  10, 10, 10, 10, 10,
+  10, 10, 10, 10,
+  10, 10
+};
+
+// notes in the melody:
+int melody[] = {
+  NOTE_E5, NOTE_E5, NOTE_E5,
+  NOTE_E5, NOTE_E5, NOTE_E5,
+  NOTE_E5, NOTE_G5, NOTE_C5, NOTE_D5,
+  NOTE_E5,
+  NOTE_F5, NOTE_F5, NOTE_F5, NOTE_F5,
+  NOTE_F5, NOTE_E5, NOTE_E5, NOTE_E5, NOTE_E5,
+  NOTE_E5, NOTE_D5, NOTE_D5, NOTE_E5,
+  NOTE_D5, NOTE_G5
+};
+
+int noteLength;
+
 // Thresholds
 #define SEALEVELPRESSURE_HPA (1013.25)
 
@@ -62,7 +98,9 @@ const char *mqtt_topic = "anami/bme280/alarm";
 
 // Alarm Control
 unsigned long overrideStartTime = 0;
+unsigned long lastPublishTime = 0; // Last time data was published
 const unsigned long overrideDuration = 30 * 1000; // 30 seconds in milliseconds
+const unsigned long publishInterval = 5000; // Publish every 5 seconds
 bool manualOverride = false;
 bool alarmOn = false;
 
@@ -70,9 +108,6 @@ bool alarmOn = false;
 const char *ntp_server = "pool.ntp.org";     // Default NTP server
 const long gmt_offset_sec =  2 * 3600;       // GMT offset in seconds (adjust for your time zone)
 const int daylight_offset_sec = 0;        // Daylight saving time offset in seconds
-
-// GPIO pin where the LED is connected
-const int ledPin = D6;
 
 Adafruit_BME280 bme; // I2C
 
@@ -125,6 +160,7 @@ void setup() {
   mqtt_client.setServer(mqtt_broker, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   connectToMQTT();
+  noteLength = sizeof(noteDurations) / sizeof(int);
 
   // Initialize BME280 sensor
   if (!bme.begin(0x76)) {
@@ -213,10 +249,11 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   Serial.print(": ");
   Serial.println(message);
 
-  // Check the LED control message
+  // Check the alarm control message
   if (String(topic) == mqtt_topic) {
     if (message == "ON") {
       digitalWrite(ledPin, HIGH); // Turn LED on
+      buzzer.playMelody(melody, noteDurations, noteLength);
       Serial.println("Alarm ON");
 
       if (!alarmOn) {
@@ -225,9 +262,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       alarmOn = true;
     } else if (message == "OFF" && manualOverride == false && alarmOn) {
       alarmOn = false;
-      mqtt_client.publish("anami/bme280/alarm/status", "OFF (Override)");
 
       digitalWrite(ledPin, LOW); // Turn LED off
+      buzzer.stop();
       Serial.println("LED OFF (Manual Override)");
       manualOverride = true;
       overrideStartTime = millis(); // Start override timer
@@ -250,6 +287,7 @@ void addReadings(float temperature, float pressure, float humidity) {
 
   // Clear fields for next usage. Tags remain the same.
   sensorReadings.clearFields();
+  lastPublishTime = millis(); // Update last publish time
 }
 
 void publishSensorData() {
@@ -263,7 +301,9 @@ void publishSensorData() {
   mqtt_client.publish(mqtt_topic_humidity, String(humidity).c_str());
 
   // Add reading to InfluxDB
-  addReadings(temperature, pressure, humidity);
+  if (millis() - lastPublishTime >= publishInterval) {
+    addReadings(temperature, pressure, humidity);
+  }
 }
 
 void loop() {
@@ -271,6 +311,7 @@ void loop() {
         connectToMQTT();
     }
     mqtt_client.loop();
+    buzzer.loop();
 
     // Handle override mode
     if (manualOverride) {
@@ -285,6 +326,7 @@ void loop() {
 
         if (temperature > THRESHOLD_TEMP || humidity > THRESHOLD_HUMIDITY || pressure > THRESHOLD_PRESSURE) {
             digitalWrite(ledPin, HIGH);
+            buzzer.playMelody(melody, noteDurations, noteLength);
 
             if (!alarmOn) {
               Serial.println("Threshold exceeded, alarm ON");
@@ -293,6 +335,7 @@ void loop() {
             alarmOn = true;
         } else {
             digitalWrite(ledPin, LOW);
+            buzzer.stop();
 
             if (alarmOn) {
               Serial.println("Normal conditions, alarm Off");
