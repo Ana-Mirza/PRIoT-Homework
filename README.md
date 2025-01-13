@@ -7,8 +7,11 @@
 ### Hardware Support
 - ESP8266 board
 - LED
+- 330 ohmi rezistor
+- Buzzer
+- BME280
 
-### Dependencies (http server)
+### Dependencies (HTTP server)
 
 ```
 pip install flask
